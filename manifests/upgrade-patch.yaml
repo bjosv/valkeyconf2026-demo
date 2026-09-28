@@ -1,0 +1,7 @@
+# Upgrade overlay: bump the Valkey image version.
+# Applied during the demo with:  kubectl patch ... --patch-file
+#
+# Adjust "from" and "to" image tags to two versions your kind cluster has
+# pre-loaded (see scripts/00-setup.sh). Scale-out/in needs Valkey 9.0+.
+spec:
+  image: valkey/valkey:9.1.0

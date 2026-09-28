@@ -1,0 +1,68 @@
+# Production-grade ValkeyCluster for the ValkeyConf 2026 demo.
+#
+# 3 shards, 1 replica each (6 pods), with:
+#   - TLS (manual Secret; the operator has no cert-manager integration yet)
+#   - an ACL user "demo" scoped to the demo keyspace
+#   - a couple of live-settable config values
+#
+# Field names verified against valkey-operator config/samples and docs/mtls.md.
+# The TLS Secret (valkey-server-tls) is created by scripts/00-setup.sh.
+# The ACL password Secret (valkey-demo-users) is created by scripts/00-setup.sh.
+---
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyCluster
+metadata:
+  name: my-cluster
+spec:
+  shards: 3
+  replicas: 1
+
+  # Starting Valkey image. Must be pre-loaded into kind (see scripts/00-setup.sh,
+  # VK_FROM_IMG). The upgrade step patches this to VK_TO_IMG on camera.
+  image: valkey/valkey:9.0.0
+
+  # Live-settable config (applied without rolling pods).
+  config:
+    maxmemory: 200mb
+    maxmemory-policy: allkeys-lfu
+
+  # TLS via a manually-managed Secret (no cert-manager integration yet).
+  networking:
+    # Announce and dial nodes by hostname, not pod IP. With TLS on, IP announce
+    # makes clients (and the operator) re-dial announced pod IPs and fail cert
+    # name checks; hostnames match the cert SANs for the headless-Service FQDNs.
+    discovery:
+      preferredEndpointType: Hostname
+    tls:
+      certificates:
+        server:
+          secretName: valkey-server-tls
+
+  # ACL: a single application user scoped to the demo keyspace.
+  users:
+    - name: demo
+      enabled: true
+      passwordSecret:
+        name: valkey-demo-users
+        keys: [demopw]
+      commands:
+        allow: ["@read", "@write", "@connection"]
+        deny: ["@admin", "@dangerous"]
+      keys:
+        readWrite: ["demo:*"]
+      channels:
+        patterns: ["demo:*"]
+    - name: default
+      enabled: true
+      permissions: "+@all ~* &*"
+      passwordSecret:
+        name: valkey-demo-users
+        keys: [defaultpw]
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
