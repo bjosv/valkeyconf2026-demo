@@ -26,15 +26,23 @@ VK_CACERT="${VK_CACERT:-/tls/ca.crt}"
 VK_HOST="$(kubectl -n "$NS" get svc -o jsonpath='{.items[?(@.spec.ports[0].port==6379)].metadata.name}' 2>/dev/null | awk '{print $1}')"
 VK_HOST="${VK_HOST:-valkey-$CLUSTER_NAME}"
 
-# Image with valkey-cli (preloaded into kind by 00-setup.sh).
-CLIENT_IMAGE="${CLIENT_IMAGE:-valkey/valkey:9.0.0}"
+# Client image, built and loaded into kind by 00-setup.sh. If you change the
+# client code, rebuild and reload it before running this:
+#   docker build -t writeload-client:demo ./writeload-client
+#   kind load docker-image writeload-client:demo --name valkey-demo
+CLIENT_IMAGE="${WRITELOAD_IMAGE:-writeload-client:demo}"
 CLIENT_POD="writeload"
 
-# Create the dedicated client pod from a full manifest so the CA volume and its
-# mount are defined at creation time (pod volumes can't be added after the
-# fact). The pod idles with 'sleep infinity' so we can exec the client into it.
-if ! kubectl -n "$NS" get pod "$CLIENT_POD" >/dev/null 2>&1; then
-  kubectl -n "$NS" apply -f - <<YAML
+# Create the dedicated client pod. The client holds a persistent, cluster-aware
+# connection, so failover and slot migration are handled by the library, not
+# counted as lost writes. Connection settings live in the pod environment; the
+# password comes from the ACL Secret via secretKeyRef, so no secret is ever
+# typed on camera. The CA is mounted at /tls from the valkey-demo-ca ConfigMap.
+# Recreate the pod each time so a code change (new image tag) always takes
+# effect; a leftover pod from a previous run would otherwise keep the old image.
+kubectl -n "$NS" delete pod "$CLIENT_POD" --ignore-not-found >/dev/null 2>&1
+kubectl -n "$NS" wait --for=delete "pod/$CLIENT_POD" --timeout=30s >/dev/null 2>&1 || true
+kubectl -n "$NS" apply -f - <<YAML
 apiVersion: v1
 kind: Pod
 metadata:
@@ -47,7 +55,28 @@ spec:
     - name: client
       image: $CLIENT_IMAGE
       imagePullPolicy: IfNotPresent
-      command: ["sleep", "infinity"]
+      # tty + stdin so the client's carriage-return-updated counter renders when
+      # we 'kubectl attach' to it from the write pane.
+      tty: true
+      stdin: true
+      env:
+        - name: VK_HOST
+          value: "$VK_HOST"
+        - name: VK_PORT
+          value: "6379"
+        - name: VK_TLS
+          value: "1"
+        - name: VK_USER
+          value: "demo"
+        - name: VK_CACERT
+          value: "$VK_CACERT"
+        - name: VK_RPS
+          value: "20"
+        - name: VK_PASS
+          valueFrom:
+            secretKeyRef:
+              name: valkey-demo-users
+              key: demopw
       volumeMounts:
         - name: ca
           mountPath: /tls
@@ -57,15 +86,17 @@ spec:
       configMap:
         name: valkey-demo-ca
 YAML
-fi
 kubectl -n "$NS" wait --for=condition=Ready "pod/$CLIENT_POD" --timeout=60s
 
-# Copy the client script into the dedicated pod.
-kubectl -n "$NS" cp scripts/writeload.sh "$CLIENT_POD:/tmp/writeload.sh"
+# Find the write-load pane by the title tmux-layout.sh set on it, so we don't
+# depend on a positional index. Fall back to pane .1 if no titled pane is found.
+WRITE_PANE="$(tmux list-panes -t "$SESSION" -F '#{pane_id} #{pane_title}' 2>/dev/null \
+  | awk '$2=="writeload"{print $1; exit}')"
+WRITE_PANE="${WRITE_PANE:-$SESSION:.1}"
 
-# Run it in the write pane. Uses the demo ACL user over TLS.
-tmux send-keys -t "$SESSION:.1" \
-  "kubectl -n $NS exec -it $CLIENT_POD -- env \
-VK_HOST=$VK_HOST VK_PORT=6379 VK_TLS=1 VK_USER=demo VK_PASS=demoPassw0rd \
-VK_CACERT=$VK_CACERT \
-bash /tmp/writeload.sh" C-m
+# Show the live counter in the write pane by attaching to the running client.
+# A TTY renders the carriage-return-updated single line (the pod sets
+# tty/stdin). Clear first so the pane starts clean; --quiet suppresses kubectl's
+# attach preamble ("If you don't see a command prompt...", audit notices).
+tmux send-keys -t "$WRITE_PANE" \
+  "clear; kubectl -n $NS attach -it --quiet $CLIENT_POD" C-m

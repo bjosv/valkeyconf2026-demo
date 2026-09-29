@@ -6,8 +6,8 @@ is narrated live during the talk (slide 15).
 
 The sequence:
 
-1. **Deploy** a production-grade `ValkeyCluster` - TLS, an ACL user, live config,
-   3 shards x 1 replica.
+1. **Deploy** a `ValkeyCluster` - TLS, an ACL user, live config,
+   3 shards x 1 replica, and print the slot map.
 2. **Start a write load** with an on-screen counter of acked vs lost writes.
 3. **Upgrade** the Valkey image - rolling, replicas first, primary last.
 4. **Scale out then in** (3 to 4 shards and back) with slot migration.
@@ -20,14 +20,19 @@ failover.
 ## Layout
 
 ```
-+-----------------------------+-----------------------+
-| PANE 0: your commands        | PANE 1: write counter |
-| (deploy, upgrade, scale...)  | (acked / LOST)        |
-|                              +-----------------------+
-|                              | PANE 2: watch roles   |
-|                              | kubectl get valkeynodes|
-+-----------------------------+-----------------------+
++---------------------------+-------------------+
+| action (your commands)    | write-load        |
+| (deploy, upgrade, scale)  | (Writes/Acked/LOST)|
++---------------------------+-------------------+
+| kubectl get valkeyclusters (STATE)            |
++-----------------------------------------------+
+| kubectl get valkeynodes (ROLE)                |
++-----------------------------------------------+
 ```
+
+The two bottom panes refresh every second (`watch`). Watch `STATE` in the
+valkeyclusters pane and `ROLE` in the valkeynodes pane change during upgrade,
+scale, and failover, while `LOST` in the write-load pane stays at 0.
 
 ## Prerequisites
 
@@ -37,7 +42,7 @@ Install these tools:
 - [kind](https://kind.sigs.k8s.io/) - local Kubernetes in Docker
 - [kubectl](https://kubernetes.io/docs/tasks/tools/) v1.31+
 - [Helm](https://helm.sh/docs/intro/install/) 3 - installs the operator
-- [VHS](https://github.com/charmbracelet/vhs) - records the terminal to MP4/GIF
+- [VHS](https://github.com/charmbracelet/vhs) - records the terminal to MP4
 - [ttyd](https://github.com/tsl0922/ttyd) - headless terminal VHS drives
 - [tmux](https://github.com/tmux/tmux) - the multi-pane layout
 - [ffmpeg](https://ffmpeg.org/) - VHS uses it to encode the video
@@ -72,7 +77,6 @@ Install **kind**, **kubectl**, and **helm** from their official docs:
 [helm](https://helm.sh/docs/intro/install/).
 
 Docker (or Colima/OrbStack) must be running before you start - kind needs it.
-If GIF export fails, install `ttyd` (VHS uses it).
 
 ### Verify everything is installed
 
@@ -87,7 +91,7 @@ make check
 make setup
 
 # 2. Record. Builds the tmux layout and drives the sequence via demo.tape.
-make record        # -> out/demo.mp4 and out/demo.gif
+make record        # -> out/demo.mp4
 
 # 3. When done.
 make teardown
@@ -97,7 +101,7 @@ To rehearse interactively instead of recording:
 
 ```sh
 make layout               # build the panes
-tmux attach -t demo       # drive pane 0 yourself
+tmux attach -t demo       # drive the action pane yourself
 make writeload            # start the counter when you reach that step
 ```
 
@@ -105,15 +109,16 @@ make writeload            # start the counter when you reach that step
 
 | Path | What |
 |------|------|
-| `manifests/valkeycluster.yaml` | Production-grade cluster: TLS, ACL user, config, 3x1 |
-| `manifests/upgrade-patch.yaml` | Version bump applied during the upgrade step |
+| `manifests/valkeycluster.yaml` | Cluster: TLS, ACL user, cluster-node-timeout, 3x1 |
 | `scripts/00-setup.sh` | Off-camera setup: kind, operator, secrets, image preload |
-| `scripts/tmux-layout.sh` | Builds the 3-pane tmux layout |
-| `scripts/writeload.sh` | The acked/lost write counter (runs inside a pod) |
-| `scripts/start-writeload.sh` | Launches the counter in the write pane |
+| `scripts/tmux-layout.sh` | Builds the tmux pane layout |
+| `writeload-client/` | Go write-load client (persistent, cluster-aware) |
+| `scripts/start-writeload.sh` | Runs the write-load client pod, shows the counter |
+| `scripts/show-topology.sh` | Prints the per-primary slot map (used in step 1) |
 | `scripts/teardown.sh` | Deletes the kind cluster |
 | `demo.tape` | VHS script: the full recorded sequence |
-| `Makefile` | `setup` / `layout` / `record` / `teardown` |
+| `SPEAKER_NOTES.md` | Talking points per demo step, for live narration |
+| `Makefile` | `setup` / `layout` / `record` / `reset` / `teardown` |
 
 ## Notes and gotchas
 
@@ -123,18 +128,35 @@ make writeload            # start the counter when you reach that step
   cluster. If your machine is slower, bump the sleeps so a step finishes before
   the tape moves on. Re-record until each step lands.
 - **Two Valkey images** are pre-loaded in setup (`VK_FROM_IMG`, `VK_TO_IMG`) so
-  the on-camera upgrade is instant. Set the starting version in the manifest and
-  the target in `manifests/upgrade-patch.yaml`; both need to exist in kind.
+  the on-camera upgrade is instant. Set the starting version in the manifest
+  (`spec.image`) and the target inline in the `demo.tape` upgrade patch; both
+  need to exist in kind.
 - **Scale-out/in needs Valkey 9.0+** (operator limitation). Use 9.x images.
 - **TLS is a manual Secret** - the operator has no cert-manager integration yet,
-  so `00-setup.sh` generates a self-signed cert. The write-load client uses
-  `--insecure` (demo certs), which is fine for a screencast.
+  so `00-setup.sh` generates a self-signed cert. Its SANs must cover the pod
+  FQDNs the operator dials (e.g. `valkey-my-cluster.demo.svc.cluster.local` and
+  `*.valkey-my-cluster.demo.svc.cluster.local`), and the manifest sets
+  `networking.discovery.preferredEndpointType: Hostname` so nodes are announced
+  by name, not IP. The Secret also carries `ca.crt` (valkey and the metrics
+  exporter mount it at `/tls`).
+- **The demo ACL user needs CLUSTER read access.** A cluster-aware client
+  (valkey-go) runs `CLUSTER SLOTS`/`SHARDS` to discover topology; the `demo`
+  user therefore allows the read-only `cluster|...` subcommands. Without them,
+  writes are misrouted and lost.
+- **`cluster-node-timeout` is set to 5s** in the manifest so an abrupt
+  primary-pod delete fails over quickly on camera; the default (15s) makes the
+  failover window long and disruptive.
+- **The write-load client** connects over TLS as the `demo` user with settings
+  from the pod's environment (host `valkey-<cluster>`, CA at `/tls/ca.crt`,
+  password from the ACL Secret via `secretKeyRef`, so no secret is shown on
+  camera). It holds a persistent cluster connection and retries unacknowledged
+  writes through failover/rebalance so `LOST` stays at 0. Rebuild it after code
+  changes: `docker build -t writeload-client:demo ./writeload-client` then
+  `kind load docker-image writeload-client:demo --name valkey-demo`.
 - **Verify field names** against the operator version you install. These were
   written against the repo's `config/samples` and `docs/` (v1alpha1): top-level
-  `spec.image`, `spec.networking.tls.certificates.server.secretName`, and the
-  `spec.users[]` ACL structure.
-- **The write-load client path** (`VK_CACERT=/etc/valkey/certs/ca.crt`) and the
-  service name (`VK_HOST=my-cluster`) may differ in your install - adjust in
-  `scripts/start-writeload.sh` if the pod can't connect.
+  `spec.image`, `spec.networking.tls.certificates.server.secretName`,
+  `spec.networking.discovery.preferredEndpointType`, and the `spec.users[]` ACL
+  structure.
 - Keep a **short fallback cut** (deploy + delete-primary only) in case the talk
-  runs long; the script's rehearsal notes call for a ~4 min version.
+  runs long; the speaker notes call for a ~4 min version.

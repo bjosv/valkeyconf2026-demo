@@ -1,9 +1,8 @@
-# Production-grade ValkeyCluster for the ValkeyConf 2026 demo.
+# ValkeyCluster for the ValkeyConf 2026 demo.
 #
 # 3 shards, 1 replica each (6 pods), with:
 #   - TLS (manual Secret; the operator has no cert-manager integration yet)
 #   - an ACL user "demo" scoped to the demo keyspace
-#   - a couple of live-settable config values
 #
 # Field names verified against valkey-operator config/samples and docs/mtls.md.
 # The TLS Secret (valkey-server-tls) is created by scripts/00-setup.sh.
@@ -23,8 +22,11 @@ spec:
 
   # Live-settable config (applied without rolling pods).
   config:
-    maxmemory: 200mb
-    maxmemory-policy: allkeys-lfu
+    # How long the cluster waits before failing over a primary it can't reach.
+    # The default (15s) makes an abrupt pod-delete disruptive for 15s. 5s gives
+    # a snappy, on-camera failover and keeps the uncovered window short enough
+    # that the write client rides through it with no lost writes.
+    cluster-node-timeout: "5000"
 
   # TLS via a manually-managed Secret (no cert-manager integration yet).
   networking:
@@ -46,7 +48,12 @@ spec:
         name: valkey-demo-users
         keys: [demopw]
       commands:
-        allow: ["@read", "@write", "@connection"]
+        # @read/@write/@connection for the data path, plus the read-only CLUSTER
+        # introspection subcommands a cluster-aware client (valkey-go) uses to
+        # discover topology and route writes. Without them, topology discovery
+        # fails and writes are misrouted and lost. Scoped to subcommands so the
+        # destructive parts of CLUSTER (reset, failover, addslots) stay denied.
+        allow: ["@read", "@write", "@connection", "cluster|slots", "cluster|shards", "cluster|nodes", "cluster|info", "cluster|myid", "cluster|myshardid"]
         deny: ["@admin", "@dangerous"]
       keys:
         readWrite: ["demo:*"]

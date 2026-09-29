@@ -10,7 +10,7 @@ CLUSTER ?= valkey-demo
 NS       ?= demo
 SESSION  ?= demo
 
-.PHONY: setup layout record deploy writeload teardown clean check
+.PHONY: setup layout record reset deploy writeload teardown clean check
 
 check:  ## verify required tools are installed
 	@missing=""; \
@@ -36,9 +36,17 @@ deploy: ## apply the demo ValkeyCluster (normally done on-camera by the tape)
 writeload: ## start the write-load counter in the tmux write pane
 	SESSION=$(SESSION) NS=$(NS) ./scripts/start-writeload.sh
 
-record: ## run VHS to produce out/demo.mp4 and out/demo.gif
+record: reset ## run VHS to produce out/demo.mp4 (resets the demo state first)
 	mkdir -p out
 	vhs demo.tape
+
+reset: ## delete the ValkeyCluster and write-load pod so the next record is fresh
+	-kubectl -n $(NS) delete valkeycluster my-cluster --ignore-not-found
+	-kubectl -n $(NS) delete pod writeload --ignore-not-found
+	@echo "waiting for cluster pods to clear..."
+	-kubectl -n $(NS) wait --for=delete pod \
+		-l app.kubernetes.io/name=valkey --timeout=90s 2>/dev/null
+	-tmux kill-session -t $(SESSION) 2>/dev/null
 
 teardown: ## delete the kind cluster and the tmux session
 	-tmux kill-session -t $(SESSION) 2>/dev/null

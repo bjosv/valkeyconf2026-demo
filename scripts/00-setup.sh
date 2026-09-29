@@ -23,6 +23,12 @@ for img in "$VK_FROM_IMG" "$VK_TO_IMG"; do
   kind load docker-image "$img" --name "$CLUSTER"
 done
 
+echo "==> build and load the write-load client image (off camera, so the demo's
+    start-writeload is instant)"
+WRITELOAD_IMAGE="${WRITELOAD_IMAGE:-writeload-client:demo}"
+docker build -t "$WRITELOAD_IMAGE" ./writeload-client
+kind load docker-image "$WRITELOAD_IMAGE" --name "$CLUSTER"
+
 echo "==> install the operator (Helm)"
 helm repo add valkey https://valkey.io/valkey-helm 2>/dev/null || true
 helm repo update >/dev/null
