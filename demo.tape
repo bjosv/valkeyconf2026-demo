@@ -20,7 +20,7 @@ Set Width 1920
 Set Height 1080
 Set Framerate 30
 Set Padding 24
-Set TypingSpeed 60ms
+Set TypingSpeed 40ms
 Set PlaybackSpeed 1.0
 
 # --- Enter the pre-built tmux layout ---
@@ -47,7 +47,7 @@ Type "" Enter
 # the 3 shards each own a slot range. This sets up the scale/migration story.
 Sleep 30s
 Type "" Enter
-Type "# Slot map: each shard owns a range of the 16384 slots" Enter
+Type "# Each shard owns a range of the 16384 slots" Enter
 Sleep 1s
 Type "./scripts/show-topology.sh" Enter
 Sleep 6s
@@ -81,7 +81,7 @@ Type "# Watch the ROLE column as nodes roll (bottom pane)" Enter
 # to ClusterHealthy before the next step, or the scale-out starts on a cluster
 # whose slots aren't fully covered and writes hit CLUSTERDOWN. Give it plenty of
 # time; the tape advances on a fixed timer regardless of status.
-Sleep 90s
+Sleep 100s
 # Narration pause: replicas upgraded first, primary last; LOST still 0.
 Sleep 15s
 
@@ -116,10 +116,13 @@ Type "" Enter
 Sleep 1s
 Type `PRIMARY=$(kubectl -n demo get valkeynodes -o jsonpath='{.items[?(@.status.role=="primary")].status.podName}' | awk '{print $1}')` Enter
 Sleep 1s
-Type "echo deleting primary pod: $PRIMARY" Enter
-Sleep 1s
 Type "" Enter
-Type "kubectl -n demo delete pod $PRIMARY" Enter
+Type "kubectl -n demo delete pod $PRIMARY --wait=false" Enter
+# --wait=false returns immediately after the API accepts the delete, instead of
+# blocking until the pod finishes terminating (which can take the full grace
+# period). Without it the "pod deleted" output arrives late, in the middle of
+# the next typed line.
+Sleep 2s
 Type "" Enter
 Type "# Watch a replica's ROLE flip to primary, then the pod rejoin as replica" Enter
 Sleep 15s
@@ -129,12 +132,9 @@ Sleep 7s
 # ============================================================
 # WRAP
 # ============================================================
-Type "clear" Enter
-Sleep 500ms
-# valkeynodes is already live in the bottom pane; close on the write-load
-# counter instead of reprinting it.
-Type "# Zero acked writes lost throughout." Enter
-Sleep 8s
+# Close on the live panes (write-load counter at LOST 0, roles settled). The
+# "zero acked writes lost" message is delivered live, not typed, to save time.
+Sleep 5s
 
 # --- Tear down the session so the attached shell exits and VHS can finalize ---
 # Without this, the tape ends while 'tmux attach' is still running, the pane 2

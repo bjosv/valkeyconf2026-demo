@@ -48,7 +48,10 @@ kubectl -n "$NS" exec -i "$POD" -c server -- \
     --user "$VK_USER" --pass "$PASS" --no-auth-warning \
     cluster nodes \
   | awk '
-      $3 ~ /master/ {
+      # Only masters that actually own slots (NF >= 9). This skips a node that
+      # is joining or being removed during a scale change, which can briefly
+      # appear as a master with no slots.
+      $3 ~ /master/ && NF >= 9 {
         # Pod name: field 2 is "ip:port@cbus,pod-fqdn"; take after comma, before first dot.
         n = split($2, a, ",")
         host = a[n]

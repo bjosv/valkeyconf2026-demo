@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 #
-# tmux-layout.sh - build the 3-pane demo layout inside a tmux session.
+# tmux-layout.sh - build the demo's 4-pane layout inside a tmux session.
 #
-#   +-----------------------------+-----------------------+
-#   | PANE 0: your commands        | PANE 1: write counter |
-#   | (deploy, upgrade, scale...)  | (acked / LOST)        |
-#   |                              +-----------------------+
-#   |                              | PANE 2: watch roles   |
-#   |                              | kubectl get valkeynodes|
-#   +-----------------------------+-----------------------+
+#   +---------------------------+-------------------+
+#   | action (your commands)    | write-load        |
+#   | (deploy, upgrade, scale)  | (Writes/Acked/LOST)|
+#   +---------------------------+-------------------+
+#   | kubectl get valkeyclusters (STATE, full width)|
+#   +-----------------------------------------------+
+#   | kubectl get valkeynodes   (ROLE,  full width) |
+#   +-----------------------------------------------+
 #
-# vhs attaches to this session and drives PANE 0. Panes 1 and 2 run their own
-# long-lived commands so they update live while you type in pane 0.
+# vhs attaches to this session and drives the action pane. The other three run
+# their own long-lived commands so they update live while you type.
 #
 # Usage (normally called by demo.tape, but you can run it standalone to rehearse):
 #   ./scripts/tmux-layout.sh
@@ -39,8 +40,9 @@ ROWS=$(awk -v h="$VID_HEIGHT" -v p="$PADDING" -v f="$FONT_SIZE" \
   'BEGIN{printf "%d", (h-2*p)/(1.2*f)}')
 
 # Write-load pane width (top-right column): the counter line
-# "Writes: N  Acked: N  LOST: N" is ~48 chars, so a slim top-right column is
-# enough; the action pane keeps the rest of the top row.
+# "Writes: N Acked: N LOST: N" is ~42 chars, so a slim column suffices. Use ~30%
+# of the grid but never below 50 cols, so the line never wraps (a wrapped line
+# makes the client's \r redraw on the wrong row). The action pane keeps the rest.
 RIGHT_COLS=$(awk -v c="$COLS" 'BEGIN{r=int(c*0.30); if (r<50) r=50; printf "%d", r}')
 # valkeyclusters strip (full width): one header + one row, so a few lines.
 CLUSTER_ROWS=4
@@ -84,8 +86,6 @@ PANE_NODES="$(tmux split-window -v -t "$PANE_CLUSTER" -l "$NODES_ROWS" -P -F '#{
 # Split the top row into action (left) + write-load (right).
 PANE_WRITE="$(tmux split-window -h -t "$PANE_ACTION" -l "$RIGHT_COLS" -P -F '#{pane_id}')"
 
-# Pane 2: live role view. This is the slide-15 highlight (ROLE column).
-# --differences highlights cells that changed since the last refresh, so a
 # A clean, minimal prompt for every pane, so the recording never shows the
 # personal PS1 (long path, git branch, username, host). PROMPT_COMMAND is unset
 # first because prompt tools like Starship set the prompt from that hook and
@@ -93,11 +93,14 @@ PANE_WRITE="$(tmux split-window -h -t "$PANE_ACTION" -l "$RIGHT_COLS" -P -F '#{p
 CLEAN_PROMPT="unset PROMPT_COMMAND; PS1='$ '; clear"
 
 # Cluster pane (full width, upper of the two bottom strips): high-level view of
-# the ValkeyCluster (state, shards, ready). --differences flashes changed cells.
+# the ValkeyCluster (STATE, REASON). Default columns; READYSHARDS is left hidden
+# (it is CRD priority 1, shown only with -o wide) because it behaves oddly during
+# the upgrade and would raise confusing questions on camera. --differences
+# flashes changed cells.
 tmux send-keys -t "$PANE_CLUSTER" "$EXEC_BASH" C-m
 tmux send-keys -t "$PANE_CLUSTER" "$CLEAN_PROMPT" C-m
 tmux send-keys -t "$PANE_CLUSTER" \
-  "watch -t -n1 --differences kubectl -n $NS get valkeyclusters" C-m
+  "watch -t -n0.5 --differences kubectl -n $NS get valkeyclusters" C-m
 
 # Nodes pane (full width, bottom): per-node role view. This is the slide-15
 # highlight (ROLE column). --differences highlights cells that changed since the
@@ -105,7 +108,7 @@ tmux send-keys -t "$PANE_CLUSTER" \
 tmux send-keys -t "$PANE_NODES" "$EXEC_BASH" C-m
 tmux send-keys -t "$PANE_NODES" "$CLEAN_PROMPT" C-m
 tmux send-keys -t "$PANE_NODES" \
-  "watch -t -n1 --differences kubectl -n $NS get valkeynodes" C-m
+  "watch -t -n0.5 --differences kubectl -n $NS get valkeynodes" C-m
 
 # Write-load pane (top-right): the acked/lost counter. Idle until step 2 of the
 # tape starts it. PS1's first line is a comment banner, then clear, so the

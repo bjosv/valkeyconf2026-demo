@@ -186,12 +186,16 @@ func main() {
 			acked++
 		} else {
 			lost++
+			// A write was lost after exhausting retries. Log the cause to stderr
+			// (log's default) so it shows in `kubectl logs` for diagnosis. This
+			// does not disturb the stdout counter line, and only fires on a
+			// genuine loss (ideally never), not on transient retries.
+			log.Printf("lost write to %q after %d retries: %s", key, retries, lastErr)
 		}
 		// Overwrite one line with \r. Fixed-width fields keep the line length
 		// constant, so no clear-to-EOL is needed. Kept comfortably under the
 		// write-load pane width so it never wraps (a wrapped line makes \r return
 		// to the wrong row and looks like new lines). Rendered via a TTY.
 		fmt.Printf("\rWrites: %-7d Acked: %-7d LOST: %-5d", writes, acked, lost)
-		_ = lastErr
 	}
 }

@@ -2,7 +2,7 @@
 
 A scripted, reproducible screencast of the Valkey operator, recorded with
 [VHS](https://github.com/charmbracelet/vhs). The video is silent by design; it
-is narrated live during the talk (slide 15).
+is narrated live during the talk.
 
 The sequence:
 
@@ -13,21 +13,17 @@ The sequence:
 4. **Scale out then in** (3 to 4 shards and back) with slot migration.
 5. **Delete a primary pod** - Valkey fails over, the operator heals it.
 
-The point of the demo: the `LOST` counter stays at **0** throughout, and the
-`ROLE` column in `kubectl get valkeynodes` visibly changes during upgrade and
-failover.
-
 ## Layout
 
 ```
-+---------------------------+-------------------+
-| action (your commands)    | write-load        |
++---------------------------+--------------------+
+| action (your commands)    | write-load         |
 | (deploy, upgrade, scale)  | (Writes/Acked/LOST)|
-+---------------------------+-------------------+
-| kubectl get valkeyclusters (STATE)            |
-+-----------------------------------------------+
-| kubectl get valkeynodes (ROLE)                |
-+-----------------------------------------------+
++---------------------------+--------------------+
+| kubectl get valkeyclusters (STATE)             |
++------------------------------------------------+
+| kubectl get valkeynodes (ROLE)                 |
++------------------------------------------------+
 ```
 
 The two bottom panes refresh every second (`watch`). Watch `STATE` in the
@@ -97,14 +93,6 @@ make record        # -> out/demo.mp4
 make teardown
 ```
 
-To rehearse interactively instead of recording:
-
-```sh
-make layout               # build the panes
-tmux attach -t demo       # drive the action pane yourself
-make writeload            # start the counter when you reach that step
-```
-
 ## Files
 
 | Path | What |
@@ -117,7 +105,6 @@ make writeload            # start the counter when you reach that step
 | `scripts/show-topology.sh` | Prints the per-primary slot map (used in step 1) |
 | `scripts/teardown.sh` | Deletes the kind cluster |
 | `demo.tape` | VHS script: the full recorded sequence |
-| `SPEAKER_NOTES.md` | Talking points per demo step, for live narration |
 | `Makefile` | `setup` / `layout` / `record` / `reset` / `teardown` |
 
 ## Notes and gotchas
@@ -127,18 +114,6 @@ make writeload            # start the counter when you reach that step
 - **Timings** in `demo.tape` (the `Sleep` lines) are tuned for a typical kind
   cluster. If your machine is slower, bump the sleeps so a step finishes before
   the tape moves on. Re-record until each step lands.
-- **Two Valkey images** are pre-loaded in setup (`VK_FROM_IMG`, `VK_TO_IMG`) so
-  the on-camera upgrade is instant. Set the starting version in the manifest
-  (`spec.image`) and the target inline in the `demo.tape` upgrade patch; both
-  need to exist in kind.
-- **Scale-out/in needs Valkey 9.0+** (operator limitation). Use 9.x images.
-- **TLS is a manual Secret** - the operator has no cert-manager integration yet,
-  so `00-setup.sh` generates a self-signed cert. Its SANs must cover the pod
-  FQDNs the operator dials (e.g. `valkey-my-cluster.demo.svc.cluster.local` and
-  `*.valkey-my-cluster.demo.svc.cluster.local`), and the manifest sets
-  `networking.discovery.preferredEndpointType: Hostname` so nodes are announced
-  by name, not IP. The Secret also carries `ca.crt` (valkey and the metrics
-  exporter mount it at `/tls`).
 - **The demo ACL user needs CLUSTER read access.** A cluster-aware client
   (valkey-go) runs `CLUSTER SLOTS`/`SHARDS` to discover topology; the `demo`
   user therefore allows the read-only `cluster|...` subcommands. Without them,
@@ -146,17 +121,3 @@ make writeload            # start the counter when you reach that step
 - **`cluster-node-timeout` is set to 5s** in the manifest so an abrupt
   primary-pod delete fails over quickly on camera; the default (15s) makes the
   failover window long and disruptive.
-- **The write-load client** connects over TLS as the `demo` user with settings
-  from the pod's environment (host `valkey-<cluster>`, CA at `/tls/ca.crt`,
-  password from the ACL Secret via `secretKeyRef`, so no secret is shown on
-  camera). It holds a persistent cluster connection and retries unacknowledged
-  writes through failover/rebalance so `LOST` stays at 0. Rebuild it after code
-  changes: `docker build -t writeload-client:demo ./writeload-client` then
-  `kind load docker-image writeload-client:demo --name valkey-demo`.
-- **Verify field names** against the operator version you install. These were
-  written against the repo's `config/samples` and `docs/` (v1alpha1): top-level
-  `spec.image`, `spec.networking.tls.certificates.server.secretName`,
-  `spec.networking.discovery.preferredEndpointType`, and the `spec.users[]` ACL
-  structure.
-- Keep a **short fallback cut** (deploy + delete-primary only) in case the talk
-  runs long; the speaker notes call for a ~4 min version.
